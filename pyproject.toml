@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwstrength"
+version = "0.1.0"
+description = "Composable password strength scoring utilities"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "requests",
+    "scikit-learn",
+    "matplotlib",
+    "zxcvbn",
+]
+
+[project.scripts]
+pwscore = "pwstrength.cli.pwscore_cli:main"
