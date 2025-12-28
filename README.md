@@ -1,116 +1,121 @@
 # pwstrength tooling
 
-This repository composes Aadi’s password-pattern scripts with additional
-features, models, and a user-friendly CLI. The original student files inside
-`password-py/` remain untouched and are imported through thin adapters.
+**Aim of the paper:** Show that **Shannon entropy alone** mis-ranks real-world password risk, and that a **hybrid score**—combining entropy, human-pattern signals, and breach prevalence—tracks risk better with reproducible code and figures.
+
+---
+
+## What to understand (before you run anything)
+
+* **Entropy is a baseline, not attacker effort.** We compute total Shannon entropy for context; it’s necessary but insufficient for estimating how hard a password is to guess. ([NIST Computer Security Resource Center][1])
+* **Human patterns matter.** The zxcvbn estimator detects dictionary words, keyboard paths, dates, repeats, and related patterns and outputs an estimated **guess count**—a stronger proxy than entropy alone. ([GitHub][2])
+* **Prevalence matters (privately).** We use **Have I Been Pwned** (HIBP) **k-anonymity** to learn how often a hash appears in breaches—only a 5-char SHA-1 prefix is sent (never plaintext or a full hash); responses can be padded. ([Have I Been Pwned][3])
+
+---
+
+## How this repo generates the data for the paper
+
+1. **Feature engineering (batch).** For each candidate string, compute
+   `entropy bits`, `length/classes`, `zxcvbn score/guesses/feedback`, `HIBP count + log_count`, and a **HybridScore v0**.
+2. **Labeling (proxy).** Define `breached = 1` if `HIBP_count ≥ τ` (use τ in {1, 10, 100}).
+3. **Evaluation.** Produce ROC/PR/Calibration plots comparing **entropy-only**, **zxcvbn-only**, and **hybrid**, plus a metrics table across τ.
+4. **Artifacts.** Save `features.parquet`/CSV, `metrics.csv`, and plots in `figs/`—these become the results package cited in the paper.
+
+---
 
 ## Repository layout
 
 ```
 password-entropy-project/
-├── password-py/          # Aadi’s original scripts (do not edit)
-├── pwstrength/           # Package code (adapters, features, models, CLI)
-├── tests/                # Regression tests
+├── password-py/          # Original pattern/guessing scripts (keep as-is)
+├── pwstrength/           # Adapters, features (entropy/zxcvbn/HIBP), models, CLI
+├── tests/                # Minimal regression tests
 ├── README.md             # This guide
-└── pyproject.toml        # Packaging + pwscore entry point
+└── pyproject.toml        # Packaging + 'pwscore' entry point
 ```
 
-## Installation
+---
 
-1. Create/activate a Python 3.10+ environment (e.g., `conda activate password`).
-2. From the project root install dependencies in editable mode:
-
-   ```bash
-   pip install -e .
-   ```
-
-   This pulls in `zxcvbn`, pandas, scikit-learn, requests, matplotlib, and
-   registers the `pwscore` console script.
-
-## CLI usage
+## Install
 
 ```bash
-pwscore 'CorrectHorseBatteryStaple' --tau 10        # offline mode (no HIBP)
-pwscore 'Tr1vial\!' --online --tau 100 --json       # query HIBP and emit JSON
+# Python 3.10+ recommended
+pip install -e .
 ```
 
-Key flags:
+Registers the `pwscore` CLI and installs dependencies (zxcvbn, pandas, scikit-learn, requests, matplotlib, etc.). ([GitHub][4])
 
-- `--online`: Enables Have I Been Pwned prefix-range queries (only the SHA-1
-  prefix is sent). Without this flag the prevalence fields are zeroed and the
-  CLI annotates “offline mode”.
-- `--tau`: Breach-label threshold for the HybridScore summary.
-- `--json`: Print the full feature dictionary as JSON instead of a table.
+---
 
-Each invocation prints an ethics reminder, entropy/length/class stats, zxcvbn
-scores, Aadi’s guess estimates and feedback, optional HIBP counts/log-counts,
-HybridScore v0, τ-based label, and crack-time scenarios from
-`Time Estimates.py`.
+## Quick start (CLI)
 
-## Module usage
+```bash
+pwscore 'CorrectHorseBatteryStaple' --tau 10            # offline (no HIBP)
+pwscore 'Tr1vial\!' --online --tau 100 --json           # HIBP prefix-range + JSON
+```
+
+* `--online` uses HIBP **range** API (5-char prefix only) for prevalence; offline mode zeroes prevalence and notes it. ([Have I Been Pwned][3])
+* `--tau` sets the breach-label threshold used in summaries.
+* `--json` emits the full feature dictionary.
+
+Each run prints an ethics reminder, entropy/length/class stats, zxcvbn score/guesses, pattern-script guesses/feedback, optional HIBP counts/log-counts, **HybridScore v0**, τ-based label, and crack-time scenarios.
+
+---
+
+## Programmatic use
 
 ```python
 from pwstrength import build_features, score
 
-# Single password (same data the CLI uses)
-result = score("Tr1vial!", online=True, tau=10)
-print(result["HybridScore_v0"])
+# Single candidate (same fields as CLI)
+res = score("Tr1vial!", online=True, tau=10)
+print(res["HybridScore_v0"], res["hibp_count"])
 
-# Batch feature engineering for modeling/evaluation
-frame = build_features(["passw0rd", "CorrectHorseBatteryStaple"], online=False)
-print(frame[["pw", "H_bits", "HybridScore_v0"]])
+# Batch feature set for modeling/eval
+df = build_features(["passw0rd", "CorrectHorseBatteryStaple"], online=False)
+df.to_parquet("data/features.parquet")
 ```
 
-Outputs include entropy bits, character class coverage, zxcvbn score/guesses,
-HIBP counts/log-counts (if online), Aadi’s guesses/score/feedback, HybridScore
-v0, τ-based breach labels, and cached crack-time displays.
+---
 
-## Evaluation helpers
+## Modeling & evaluation
 
-`pwstrength.models.hybrid` exposes:
+* `pwstrength.models.hybrid`
 
-- `hybrid_score_v0(row)` for the transparent baseline,
-- `fit_logistic(df, labels)` and `predict_proba(...)` for a lightweight
-  logistic baseline using entropy/log-count/log-guesses features.
+  * `hybrid_score_v0(row)` (transparent baseline)
+  * `fit_logistic(...)` / `predict_proba(...)` (lightweight, interpretable baseline)
 
-`pwstrength.models.evaluate` provides ROC/PR/Calibration plotting helpers and
-`metrics_over_thresholds(df, taus=(1,10,100))` to summarize ROC AUC, average
-precision, and Brier score across τ values.
+* `pwstrength.models.evaluate`
 
-## Student workflow & deliverables
+  * `metrics_over_thresholds(df, taus=(1,10,100))` → ROC AUC / AP / Brier
+  * `plot_roc`, `plot_pr`, `plot_calibration` → figures in `figs/`
 
-We hand this repo (or the `password-entropy-project/` folder) to students so
-they can generate consistent artifacts:
+**Workflow (run in order):**
 
-1. **Environment + smoke test**  
-   `pip install -e .` followed by `pwscore 'Example123!'` to confirm the CLI.
+1. **Smoke test:** `pip install -e .` → `pwscore 'Example123!'`
+2. **Generate features:** `build_features([...], online=True)` → save Parquet/CSV
+3. **Compute metrics & plots:** run evaluation helpers (ROC/PR/Calibration; τ grid)
+4. **Bundle artifacts:** push `features.parquet`, `metrics.csv`, and `figs/*.png`
 
-2. **Feature dataset**  
-   Use `build_features(password_list, online=True)` to turn a supplied corpus
-   of candidates into a DataFrame, then save it (e.g. `df.to_parquet("data/features.parquet")`).
-   Columns include entropy bits, char-class coverage, zxcvbn metrics, HIBP
-   prevalence, Aadi guesses/scores/feedback, HybridScore v0, and τ-based labels.
+---
 
-3. **Evaluation table**  
-   Feed the same frame into `metrics_over_thresholds(df)` (and optionally the
-   logistic baseline) to produce ROC AUC / Average Precision / Brier metrics for
-   τ ∈ {1, 10, 100}. Export to CSV for review.
+## Notes
 
-4. **Plots (optional but encouraged)**  
-   Use `plot_roc`, `plot_pr`, and `plot_calibration` to save figures in `figs/`
-   showing how HybridScore/logistic probabilities behave.
+* Keep `password-py/` as-is; the package imports through thin adapters.
+* Use synthetic/obviously fake examples; never paste real passwords.
+* HIBP **range** endpoint requires a user-agent; only the SHA-1 **prefix** leaves your machine; enable padding where possible. ([Have I Been Pwned][3])
 
-These deliverables (features.parquet/CSV, metrics table, and plots) become the
-“results/data” package we expect back from the student.
+---
 
-## Tests
+## References
 
-Run the regression tests with:
+* **NIST SP 800-63B (Rev. 4): Digital Identity Guidelines — Authentication & Authenticator Management.** (official) ([NIST Computer Security Resource Center][5])
+* **Have I Been Pwned — API v3 (Pwned Passwords / range).** (official) ([Have I Been Pwned][3])
+* **Cloudflare Blog — “Validating Leaked Passwords with k-Anonymity.”** (explainer) ([The Cloudflare Blog][6])
+* **Dropbox zxcvbn (GitHub).** (pattern-aware estimator) ([GitHub][4])
 
-```bash
-python -m pytest -q
-```
-
-The suite currently covers entropy calculations, HIBP prefix caching/parsing,
-and the hybrid scoring/logistic baseline. Ensure the `password-py/` student
-files remain adjacent to the package so the adapters can import them.
+[1]: https://csrc.nist.gov/pubs/sp/800/63/b/upd2/final?utm_source=chatgpt.com "SP 800-63B, Digital Identity Guidelines: Authentication and Lifecycle ..."
+[2]: https://github.com/dropbox/zxcvbn/blob/master/README.md?utm_source=chatgpt.com "zxcvbn/README.md at master · dropbox/zxcvbn · GitHub"
+[3]: https://haveibeenpwned.com/API/v3?utm_source=chatgpt.com "API Documentation - Have I Been Pwned"
+[4]: https://github.com/dropbox/zxcvbn?utm_source=chatgpt.com "GitHub - dropbox/zxcvbn: Low-Budget Password Strength Estimation"
+[5]: https://csrc.nist.gov/pubs/sp/800/63/b/4/final?utm_source=chatgpt.com "SP 800-63B-4, Digital Identity Guidelines: Authentication and ..."
+[6]: https://blog.cloudflare.com/validating-leaked-passwords-with-k-anonymity/?utm_source=chatgpt.com "Validating Leaked Passwords with k-Anonymity - The Cloudflare Blog"
